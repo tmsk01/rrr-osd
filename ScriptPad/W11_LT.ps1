@@ -52,7 +52,7 @@ If (!(Test-Path "C:\ProgramData\OSDeploy")) {
 $OOBEDeployJson | Out-File -FilePath "C:\ProgramData\OSDeploy\OSDeploy.OOBEDeploy.json" -Encoding utf8 -Force
 
 #==================================================================
-# [PostOS] Staging Rename + JumpCloud scripts for SetupComplete
+# [PostOS] Stage SetupComplete: rename + auto-login + JumpCloud RunOnce
 #==================================================================
 Write-Host -ForegroundColor Green "Staging SetupComplete scripts"
 
@@ -61,57 +61,90 @@ if (!(Test-Path $SetupScriptsPath)) {
     New-Item $SetupScriptsPath -ItemType Directory -Force | Out-Null
 }
 
-# ----- Rename script (hostname: O-LT-<serial>, max 15 chars NetBIOS) -----
-$RenameScriptContent = @'
+# ----- SetupComplete script: runs during Specialize, before first login -----
+# Does the rename, enables auto-login, stages JumpCloud RunOnce, reboots
+$SetupCompleteScript = @'
 #Requires -RunAsAdministrator
+$LogPath = "C:\Windows\Temp\SetupComplete.log"
+"$(Get-Date) - SetupComplete script starting" | Out-File -FilePath $LogPath -Encoding ascii -Append
+
+# --- 1. Rename PC (UPPERCASE, NetBIOS max 15 chars) ---
 try {
-    $serial = (Get-CimInstance -ClassName Win32_BIOS).SerialNumber.Trim()
-    # NetBIOS cap is 15 chars. "O-LT-" = 5, leaves 10 for serial.
+    $serial = (Get-CimInstance -ClassName Win32_BIOS).SerialNumber.Trim().ToUpper()
     if ($serial.Length -gt 10) { $serial = $serial.Substring(0, 10) }
     if (-not [string]::IsNullOrWhiteSpace($serial)) {
         $newHostname = "O-LT-$serial"
         Rename-Computer -NewName $newHostname -Force -ErrorAction Stop
+        "$(Get-Date) - Renamed to $newHostname" | Out-File -FilePath $LogPath -Encoding ascii -Append
     }
 } catch {
-    "$_" | Out-File -FilePath C:\Windows\Temp\Rename-Computer-Error.log -Encoding utf8 -Append
+    "$(Get-Date) - Rename error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
 }
-'@
-$RenameScriptContent | Out-File -FilePath "$SetupScriptsPath\RenamePC.ps1" -Encoding utf8 -Force
 
-# ----- JumpCloud agent install -----
-$JumpCloudScriptContent = @'
+# --- 2. Enable auto-login for Ovoko Admin on next boot ---
+try {
+    $WinLogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    Set-ItemProperty -Path $WinLogon -Name 'AutoAdminLogon'   -Value '1'            -Type String -Force
+    Set-ItemProperty -Path $WinLogon -Name 'DefaultUsername'  -Value 'Ovoko Admin'  -Type String -Force
+    Set-ItemProperty -Path $WinLogon -Name 'DefaultPassword'  -Value 'Uycju6CgLBLC4' -Type String -Force
+    Set-ItemProperty -Path $WinLogon -Name 'AutoLogonCount'   -Value 1              -Type DWord  -Force
+    "$(Get-Date) - Auto-login enabled for Ovoko Admin (one-shot)" | Out-File -FilePath $LogPath -Encoding ascii -Append
+} catch {
+    "$(Get-Date) - Auto-login setup error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
+}
+
+# --- 3. Stage RunOnce entry to install JumpCloud on first user login ---
+try {
+    $RunOnce = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
+    if (!(Test-Path $RunOnce)) { New-Item -Path $RunOnce -Force | Out-Null }
+
+    # Windows runs RunOnce entries in alphabetical order; prefix "!" ensures this runs early.
+    # The command launches powershell hidden, runs our install script, logs output.
+    $InstallCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Install-JumpCloud.ps1"'
+    Set-ItemProperty -Path $RunOnce -Name '!InstallJumpCloud' -Value $InstallCmd -Type String -Force
+    "$(Get-Date) - RunOnce staged for JumpCloud install" | Out-File -FilePath $LogPath -Encoding ascii -Append
+} catch {
+    "$(Get-Date) - RunOnce setup error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
+}
+
+"$(Get-Date) - SetupComplete script finished, rebooting for rename" | Out-File -FilePath $LogPath -Encoding ascii -Append
+
+# --- 4. Force reboot so the rename applies before JumpCloud reports the hostname ---
+shutdown.exe /r /t 5 /c "Rebooting to apply hostname"
+'@
+$SetupCompleteScript | Out-File -FilePath "$SetupScriptsPath\SetupComplete-Custom.ps1" -Encoding ascii -Force
+
+# ----- JumpCloud install script (runs on first user login via RunOnce) -----
+# This is JumpCloud's official snippet, wrapped with logging
+$JumpCloudScript = @'
 #Requires -RunAsAdministrator
 $LogPath = "C:\Windows\Temp\JumpCloud-Install.log"
+"$(Get-Date) - JumpCloud install starting" | Out-File -FilePath $LogPath -Encoding ascii -Append
 try {
-    "$(Get-Date) - Downloading JumpCloud installer" | Out-File -FilePath $LogPath -Encoding ascii -Append
-    $installer = 'C:\Windows\Temp\JumpCloudInstaller.exe'
-    Invoke-WebRequest -Uri 'https://cdn02.jumpcloud.com/production/JumpCloudInstaller.exe' `
-                      -OutFile $installer -UseBasicParsing
-
-    $ConnectKey = 'jcc_eyJwdWJsaWNLaWNrc3RhcnRVcmwiOiJodHRwczovL2tpY2tzdGFydC5qdW1wY2xvdWQuY29tIiwicHJpdmF0ZUtpY2tzdGFydFVybCI6Imh0dHBzOi8vcHJpdmF0ZS1raWNrc3RhcnQuanVtcGNsb3VkLmNvbSIsImNvbm5lY3RLZXkiOiI4ZTlmNmY1OWQ4ZjEzZDQyMDc2OTZlYTI3Njk0YWUyMGY1ODkzMDBlIn0g'
-
-    Start-Process -FilePath $installer `
-        -ArgumentList "-k $ConnectKey /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /NOCLOSEAPPLICATIONS" `
-        -Wait -NoNewWindow
-    "$(Get-Date) - JumpCloud installer finished" | Out-File -FilePath $LogPath -Encoding ascii -Append
+    # JumpCloud's official install one-liner from admin console
+    cd $env:temp
+    Invoke-RestMethod -Method Get `
+        -URI https://raw.githubusercontent.com/TheJumpCloud/support/master/scripts/windows/InstallWindowsAgent.ps1 `
+        -OutFile InstallWindowsAgent.ps1
+    ./InstallWindowsAgent.ps1 -JumpCloudConnectKey "jcc_eyJwdWJsaWNLaWNrc3RhcnRVcmwiOiJodHRwczovL2tpY2tzdGFydC5qdW1wY2xvdWQuY29tIiwicHJpdmF0ZUtpY2tzdGFydFVybCI6Imh0dHBzOi8vcHJpdmF0ZS1raWNrc3RhcnQuanVtcGNsb3VkLmNvbSIsImNvbm5lY3RLZXkiOiI4ZTlmNmY1OWQ4ZjEzZDQyMDc2OTZlYTI3Njk0YWUyMGY1ODkzMDBlIn0g" 2>&1 | Out-File -FilePath $LogPath -Encoding ascii -Append
+    "$(Get-Date) - JumpCloud install finished" | Out-File -FilePath $LogPath -Encoding ascii -Append
 } catch {
     "$(Get-Date) - JumpCloud install error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
 }
 '@
-$JumpCloudScriptContent | Out-File -FilePath "$SetupScriptsPath\Install-JumpCloud.ps1" -Encoding utf8 -Force
+$JumpCloudScript | Out-File -FilePath "$SetupScriptsPath\Install-JumpCloud.ps1" -Encoding ascii -Force
 
-# ----- SetupComplete.cmd - runs both scripts at end of Specialize -----
-$SetupCompleteCmdContent = @'
+# ----- SetupComplete.cmd: Windows auto-runs this at end of Specialize -----
+$SetupCompleteCmd = @'
 @echo off
-powershell.exe -ExecutionPolicy Bypass -NoProfile -File C:\Windows\Setup\Scripts\RenamePC.ps1
-powershell.exe -ExecutionPolicy Bypass -NoProfile -File C:\Windows\Setup\Scripts\Install-JumpCloud.ps1
+powershell.exe -ExecutionPolicy Bypass -NoProfile -File C:\Windows\Setup\Scripts\SetupComplete-Custom.ps1
 '@
-$SetupCompleteCmdContent | Out-File -FilePath "$SetupScriptsPath\SetupComplete.cmd" -Encoding ascii -Force
+$SetupCompleteCmd | Out-File -FilePath "$SetupScriptsPath\SetupComplete.cmd" -Encoding ascii -Force
 
-Write-Host "RenamePC.ps1, Install-JumpCloud.ps1, SetupComplete.cmd staged." -ForegroundColor Green
+Write-Host -ForegroundColor Green "SetupComplete scripts staged."
 
 #================================================
-# [PostOS] OOBE CMD Command Line
+# [PostOS] OOBE CMD Command Line (language settings)
 #================================================
 Write-Host -ForegroundColor Green "Staging OOBE-phase global settings"
 Invoke-RestMethod https://raw.githubusercontent.com/tmsk01/rrr-osd/main/Set-GlobalSettings.ps1 | Out-File -FilePath 'C:\Windows\Setup\scripts\global.ps1' -Encoding ascii -Force
