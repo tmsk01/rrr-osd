@@ -2,7 +2,7 @@
 
 param(
     [string]$WorkspacePath = 'C:\OSDCloud\MyWorkspace',
-    [string]$IsoUrl        = 'https://drive.google.com/uc?export=download&id=1zlk2RB9-edkhwQVX0BiI6iZrcJqOuot2',
+    [string]$IsoFileId     = '1zlk2RB9-edkhwQVX0BiI6iZrcJqOuot2',
     [string]$IsoLocalPath  = "$env:USERPROFILE\Downloads\RRR-OSDCloud.iso",
     [string]$AdkBootstrapUrl   = 'https://go.microsoft.com/fwlink/?linkid=2289980',
     [string]$WinPEBootstrapUrl = 'https://go.microsoft.com/fwlink/?linkid=2289981'
@@ -68,6 +68,51 @@ function Get-FileWithProgress {
     Write-Progress -Activity $Activity -Completed
 }
 
+function Get-GoogleDriveFile {
+    param($FileId, $Destination)
+
+    $cookieFile = "$env:TEMP\gdrive-cookies.txt"
+    if (Test-Path $cookieFile) { Remove-Item $cookieFile -Force }
+
+    $initialUrl = "https://drive.google.com/uc?export=download&id=$FileId"
+
+    Write-Progress -Activity 'Resolving Google Drive download' -Status 'Fetching confirmation token...'
+    $tokenPagePath = "$env:TEMP\gdrive-page.html"
+    & curl.exe -sL -c $cookieFile -o $tokenPagePath $initialUrl
+    Write-Progress -Activity 'Resolving Google Drive download' -Completed
+
+    if (-not (Test-Path $tokenPagePath)) {
+        throw "Initial Google Drive request failed"
+    }
+
+    $pageContent = Get-Content $tokenPagePath -Raw -ErrorAction SilentlyContinue
+    $finalUrl = $null
+
+    if ($pageContent -match 'confirm=([0-9A-Za-z_-]+)') {
+        $token = $Matches[1]
+        $finalUrl = "https://drive.google.com/uc?export=download&confirm=$token&id=$FileId"
+    }
+    elseif ($pageContent -match 'action="(https://[^"]+)"[^>]*id="download-form"') {
+        $formAction = $Matches[1] -replace '&amp;', '&'
+        $finalUrl = $formAction
+    }
+    elseif ($pageContent -match 'href="(/uc\?export=download[^"]+)"') {
+        $finalUrl = "https://drive.google.com" + ($Matches[1] -replace '&amp;', '&')
+    }
+    else {
+        $finalUrl = $initialUrl
+    }
+
+    Remove-Item $tokenPagePath -Force -ErrorAction SilentlyContinue
+
+    Write-Host "Starting download via curl with cookies..." -ForegroundColor Gray
+    Write-Progress -Activity 'Downloading ISO' -Status 'curl is downloading - check Downloads folder for size'
+    & curl.exe -L -b $cookieFile -o $Destination $finalUrl --progress-bar
+    Write-Progress -Activity 'Downloading ISO' -Completed
+
+    Remove-Item $cookieFile -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host "`n=== RRR OSDCloud Workspace Bootstrap ===" -ForegroundColor Magenta
 
 Step 1 'Windows ADK + WinPE'
@@ -81,14 +126,14 @@ if (Test-Path $winpePath) {
     $adkExe = Join-Path $tempDir 'adksetup.exe'
     Get-FileWithProgress -Url $AdkBootstrapUrl -Destination $adkExe -Activity 'Downloading ADK installer'
 
-    Write-Progress -Activity 'Installing ADK' -Status 'Running silent installer (this can take 5-10 minutes)...'
+    Write-Progress -Activity 'Installing ADK' -Status 'Running silent installer (5-10 minutes)...'
     Start-Process -FilePath $adkExe -ArgumentList '/quiet','/norestart','/features','OptionId.DeploymentTools' -Wait -NoNewWindow
     Write-Progress -Activity 'Installing ADK' -Completed
 
     $winpeExe = Join-Path $tempDir 'adkwinpesetup.exe'
     Get-FileWithProgress -Url $WinPEBootstrapUrl -Destination $winpeExe -Activity 'Downloading WinPE add-on'
 
-    Write-Progress -Activity 'Installing WinPE add-on' -Status 'Running silent installer (this can take 3-5 minutes)...'
+    Write-Progress -Activity 'Installing WinPE add-on' -Status 'Running silent installer (3-5 minutes)...'
     Start-Process -FilePath $winpeExe -ArgumentList '/quiet','/norestart','/features','OptionId.WindowsPreinstallationEnvironment' -Wait -NoNewWindow
     Write-Progress -Activity 'Installing WinPE add-on' -Completed
 
@@ -116,24 +161,17 @@ if (Test-Path $IsoLocalPath) {
     $sizeMB = [math]::Round((Get-Item $IsoLocalPath).Length / 1MB, 1)
     Write-Host "Already exists at $IsoLocalPath ($sizeMB MB)" -ForegroundColor Green
 } else {
-    $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
-    Write-Progress -Activity 'Resolving Google Drive download' -Status 'Fetching confirmation token...'
-    $firstResponse = Invoke-WebRequest -Uri $IsoUrl -WebSession $session -UseBasicParsing
-    Write-Progress -Activity 'Resolving Google Drive download' -Completed
+    Get-GoogleDriveFile -FileId $IsoFileId -Destination $IsoLocalPath
 
-    $finalUrl = $IsoUrl
-    if ($firstResponse.Headers['Content-Type'] -match 'text/html') {
-        $confirmMatch = [regex]::Match($firstResponse.Content, 'confirm=([0-9A-Za-z_]+)')
-        $token = if ($confirmMatch.Success) { $confirmMatch.Groups[1].Value } else { 't' }
-        $finalUrl = "$IsoUrl&confirm=$token"
+    if (-not (Test-Path $IsoLocalPath)) {
+        Write-Error "ISO download failed. Download the file manually from Google Drive to $IsoLocalPath, then re-run this script."
+        return
     }
-
-    Get-FileWithProgress -Url $finalUrl -Destination $IsoLocalPath -Activity 'Downloading ISO'
 
     $sizeMB = [math]::Round((Get-Item $IsoLocalPath).Length / 1MB, 1)
     if ($sizeMB -lt 100) {
-        Remove-Item $IsoLocalPath
-        Write-Error "ISO download returned only $sizeMB MB. Download the file manually from Google Drive to $IsoLocalPath, then re-run."
+        Remove-Item $IsoLocalPath -Force
+        Write-Error "Downloaded file is only $sizeMB MB (Google Drive returned an HTML error page instead of the ISO). Download manually from your Google Drive link to $IsoLocalPath, then re-run this script."
         return
     }
     Write-Host "Downloaded $sizeMB MB" -ForegroundColor Green
