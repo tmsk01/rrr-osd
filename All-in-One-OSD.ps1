@@ -68,26 +68,50 @@ function Get-FileWithProgress {
     Write-Progress -Activity $Activity -Completed
 }
 
+function Get-RealPython {
+    $candidates = @(
+        "$env:LOCALAPPDATA\Programs\Python\Python313\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+        "C:\Program Files\Python313\python.exe",
+        "C:\Program Files\Python312\python.exe",
+        "C:\Program Files\Python311\python.exe"
+    )
+    foreach ($p in $candidates) {
+        if (Test-Path $p) { return $p }
+    }
+
+    $found = Get-ChildItem "$env:LOCALAPPDATA\Programs\Python\" -Filter python.exe -Recurse -ErrorAction SilentlyContinue |
+             Where-Object { $_.FullName -notmatch 'WindowsApps' } |
+             Select-Object -First 1 -ExpandProperty FullName
+    if ($found) { return $found }
+
+    $found = Get-ChildItem "C:\Program Files\Python*\python.exe" -ErrorAction SilentlyContinue |
+             Select-Object -First 1 -ExpandProperty FullName
+    if ($found) { return $found }
+
+    return $null
+}
+
 function Ensure-Python {
-    if (Get-Command python -ErrorAction SilentlyContinue) {
-        $version = & python --version 2>&1
-        if ($version -match 'Python 3\.\d+') { return }
+    $existing = Get-RealPython
+    if ($existing) {
+        $script:PythonExe = $existing
+        return
     }
 
     Write-Host "Python not found - installing via winget..." -ForegroundColor Gray
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-        throw "winget is not available on this machine. Install Python manually from python.org and re-run."
+        throw "winget is not available. Install Python manually from python.org and re-run."
     }
     winget install -e --id Python.Python.3.12 --silent --accept-source-agreements --accept-package-agreements | Out-Null
 
-    $machinePath = [System.Environment]::GetEnvironmentVariable("Path","Machine")
-    $userPath = [System.Environment]::GetEnvironmentVariable("Path","User")
-    $env:Path = "$machinePath;$userPath"
-
-    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-        throw "Python installed but not on PATH. Close this PowerShell window, open a new admin PowerShell, and re-run the script."
+    $existing = Get-RealPython
+    if (-not $existing) {
+        throw "Python installed but cannot be located. Open a new admin PowerShell window and re-run the script."
     }
-    Write-Host "Python installed" -ForegroundColor Green
+    $script:PythonExe = $existing
+    Write-Host "Python installed at $existing" -ForegroundColor Green
 }
 
 function Get-GoogleDriveFile {
@@ -96,11 +120,11 @@ function Get-GoogleDriveFile {
     Ensure-Python
 
     Write-Progress -Activity 'Preparing gdown' -Status 'Installing/upgrading via pip...'
-    & python -m pip install --quiet --upgrade gdown 2>&1 | Out-Null
+    & $script:PythonExe -m pip install --quiet --upgrade gdown 2>&1 | Out-Null
     Write-Progress -Activity 'Preparing gdown' -Completed
 
     Write-Host "Downloading ISO via gdown..." -ForegroundColor Gray
-    & python -m gdown "https://drive.google.com/uc?id=$FileId" -O $Destination
+    & $script:PythonExe -m gdown "https://drive.google.com/uc?id=$FileId" -O $Destination
 }
 
 Write-Host "`n=== RRR OSDCloud Workspace Bootstrap ===" -ForegroundColor Magenta
