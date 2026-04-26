@@ -68,49 +68,39 @@ function Get-FileWithProgress {
     Write-Progress -Activity $Activity -Completed
 }
 
+function Ensure-Python {
+    if (Get-Command python -ErrorAction SilentlyContinue) {
+        $version = & python --version 2>&1
+        if ($version -match 'Python 3\.\d+') { return }
+    }
+
+    Write-Host "Python not found - installing via winget..." -ForegroundColor Gray
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        throw "winget is not available on this machine. Install Python manually from python.org and re-run."
+    }
+    winget install -e --id Python.Python.3.12 --silent --accept-source-agreements --accept-package-agreements | Out-Null
+
+    $machinePath = [System.Environment]::GetEnvironmentVariable("Path","Machine")
+    $userPath = [System.Environment]::GetEnvironmentVariable("Path","User")
+    $env:Path = "$machinePath;$userPath"
+
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+        throw "Python installed but not on PATH. Close this PowerShell window, open a new admin PowerShell, and re-run the script."
+    }
+    Write-Host "Python installed" -ForegroundColor Green
+}
+
 function Get-GoogleDriveFile {
     param($FileId, $Destination)
 
-    $cookieFile = "$env:TEMP\gdrive-cookies.txt"
-    if (Test-Path $cookieFile) { Remove-Item $cookieFile -Force }
+    Ensure-Python
 
-    $initialUrl = "https://drive.google.com/uc?export=download&id=$FileId"
+    Write-Progress -Activity 'Preparing gdown' -Status 'Installing/upgrading via pip...'
+    & python -m pip install --quiet --upgrade gdown 2>&1 | Out-Null
+    Write-Progress -Activity 'Preparing gdown' -Completed
 
-    Write-Progress -Activity 'Resolving Google Drive download' -Status 'Fetching confirmation token...'
-    $tokenPagePath = "$env:TEMP\gdrive-page.html"
-    & curl.exe -sL -c $cookieFile -o $tokenPagePath $initialUrl
-    Write-Progress -Activity 'Resolving Google Drive download' -Completed
-
-    if (-not (Test-Path $tokenPagePath)) {
-        throw "Initial Google Drive request failed"
-    }
-
-    $pageContent = Get-Content $tokenPagePath -Raw -ErrorAction SilentlyContinue
-    $finalUrl = $null
-
-    if ($pageContent -match 'confirm=([0-9A-Za-z_-]+)') {
-        $token = $Matches[1]
-        $finalUrl = "https://drive.google.com/uc?export=download&confirm=$token&id=$FileId"
-    }
-    elseif ($pageContent -match 'action="(https://[^"]+)"[^>]*id="download-form"') {
-        $formAction = $Matches[1] -replace '&amp;', '&'
-        $finalUrl = $formAction
-    }
-    elseif ($pageContent -match 'href="(/uc\?export=download[^"]+)"') {
-        $finalUrl = "https://drive.google.com" + ($Matches[1] -replace '&amp;', '&')
-    }
-    else {
-        $finalUrl = $initialUrl
-    }
-
-    Remove-Item $tokenPagePath -Force -ErrorAction SilentlyContinue
-
-    Write-Host "Starting download via curl with cookies..." -ForegroundColor Gray
-    Write-Progress -Activity 'Downloading ISO' -Status 'curl is downloading - check Downloads folder for size'
-    & curl.exe -L -b $cookieFile -o $Destination $finalUrl --progress-bar
-    Write-Progress -Activity 'Downloading ISO' -Completed
-
-    Remove-Item $cookieFile -Force -ErrorAction SilentlyContinue
+    Write-Host "Downloading ISO via gdown..." -ForegroundColor Gray
+    & python -m gdown "https://drive.google.com/uc?id=$FileId" -O $Destination
 }
 
 Write-Host "`n=== RRR OSDCloud Workspace Bootstrap ===" -ForegroundColor Magenta
@@ -164,14 +154,14 @@ if (Test-Path $IsoLocalPath) {
     Get-GoogleDriveFile -FileId $IsoFileId -Destination $IsoLocalPath
 
     if (-not (Test-Path $IsoLocalPath)) {
-        Write-Error "ISO download failed. Download the file manually from Google Drive to $IsoLocalPath, then re-run this script."
+        Write-Error "ISO download failed. Download manually from Google Drive to $IsoLocalPath, then re-run."
         return
     }
 
     $sizeMB = [math]::Round((Get-Item $IsoLocalPath).Length / 1MB, 1)
     if ($sizeMB -lt 100) {
         Remove-Item $IsoLocalPath -Force
-        Write-Error "Downloaded file is only $sizeMB MB (Google Drive returned an HTML error page instead of the ISO). Download manually from your Google Drive link to $IsoLocalPath, then re-run this script."
+        Write-Error "Downloaded file is only $sizeMB MB. Download manually to $IsoLocalPath, then re-run."
         return
     }
     Write-Host "Downloaded $sizeMB MB" -ForegroundColor Green
