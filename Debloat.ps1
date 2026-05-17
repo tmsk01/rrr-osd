@@ -43,8 +43,7 @@ try {
         '-ShowKnownFileExt',
         '-HideOnedrive',
         '-DisableOnedrive',
-        '-DisableCortana',
-        '-DisableWindowsRecall'
+        '-DisableCortana'
     ) -join ' '
 
     $cmd = "& `"$debloatScript`" $flags"
@@ -52,7 +51,12 @@ try {
 
     powershell.exe -ExecutionPolicy Bypass -NoProfile -Command $cmd 2>&1 | Out-File -FilePath $LogPath -Encoding ascii -Append
 
-    "$(Get-Date) - Debloat finished" | Out-File -FilePath $LogPath -Encoding ascii -Append
+    "$(Get-Date) - Debloat finished, restarting explorer to apply taskbar/start changes" | Out-File -FilePath $LogPath -Encoding ascii -Append
+    Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    Start-Process explorer.exe
+
+    "$(Get-Date) - Done" | Out-File -FilePath $LogPath -Encoding ascii -Append
 } catch {
     "$(Get-Date) - Debloat error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
 }
