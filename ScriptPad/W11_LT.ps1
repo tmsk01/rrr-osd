@@ -52,7 +52,7 @@ If (!(Test-Path "C:\ProgramData\OSDeploy")) {
 $OOBEDeployJson | Out-File -FilePath "C:\ProgramData\OSDeploy\OSDeploy.OOBEDeploy.json" -Encoding utf8 -Force
 
 #==================================================================
-# [PostOS] Stage SetupComplete: rename + JumpCloud RunOnce + Debloat RunOnce
+# [PostOS] Stage SetupComplete: rename + JumpCloud RunOnce
 #==================================================================
 Write-Host -ForegroundColor Green "Staging SetupComplete scripts"
 
@@ -81,13 +81,9 @@ try {
 try {
     $RunOnce = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
     if (!(Test-Path $RunOnce)) { New-Item -Path $RunOnce -Force | Out-Null }
-    $JCCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Install-JumpCloud.ps1"'
-    Set-ItemProperty -Path $RunOnce -Name '!1InstallJumpCloud' -Value $JCCmd -Type String -Force
+    $InstallCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Install-JumpCloud.ps1"'
+    Set-ItemProperty -Path $RunOnce -Name '!InstallJumpCloud' -Value $InstallCmd -Type String -Force
     "$(Get-Date) - RunOnce staged for JumpCloud install" | Out-File -FilePath $LogPath -Encoding ascii -Append
-
-    $DebloatCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Run-Debloat.ps1"'
-    Set-ItemProperty -Path $RunOnce -Name '!2RunDebloat' -Value $DebloatCmd -Type String -Force
-    "$(Get-Date) - RunOnce staged for Debloat" | Out-File -FilePath $LogPath -Encoding ascii -Append
 } catch {
     "$(Get-Date) - RunOnce setup error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
 }
@@ -113,22 +109,6 @@ try {
 '@
 $JumpCloudScript | Out-File -FilePath "$SetupScriptsPath\Install-JumpCloud.ps1" -Encoding ascii -Force
 
-$RunDebloatScript = @'
-#Requires -RunAsAdministrator
-$LogPath = "C:\Windows\Temp\Run-Debloat.log"
-"$(Get-Date) - Run-Debloat wrapper starting" | Out-File -FilePath $LogPath -Encoding ascii -Append
-try {
-    $debloat = "$env:TEMP\Debloat.ps1"
-    Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/tmsk01/rrr-osd/main/Debloat.ps1' `
-                      -OutFile $debloat -UseBasicParsing
-    & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $debloat 2>&1 | Out-File -FilePath $LogPath -Encoding ascii -Append
-    "$(Get-Date) - Debloat finished" | Out-File -FilePath $LogPath -Encoding ascii -Append
-} catch {
-    "$(Get-Date) - Wrapper error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
-}
-'@
-$RunDebloatScript | Out-File -FilePath "$SetupScriptsPath\Run-Debloat.ps1" -Encoding ascii -Force
-
 $SetupCompleteCmd = @'
 @echo off
 powershell.exe -ExecutionPolicy Bypass -NoProfile -File C:\Windows\Setup\Scripts\SetupComplete-Custom.ps1
@@ -138,9 +118,9 @@ $SetupCompleteCmd | Out-File -FilePath "$SetupScriptsPath\SetupComplete.cmd" -En
 Write-Host -ForegroundColor Green "SetupComplete scripts staged."
 
 #================================================
-# [PostOS] OOBE CMD Command Line (language only - debloat moved to RunOnce)
+# [PostOS] OOBE CMD Command Line (language settings)
 #================================================
-Write-Host -ForegroundColor Green "Staging OOBE-phase scripts"
+Write-Host -ForegroundColor Green "Staging OOBE-phase global settings"
 Invoke-RestMethod https://raw.githubusercontent.com/tmsk01/rrr-osd/main/Set-GlobalSettings.ps1 | Out-File -FilePath 'C:\Windows\Setup\scripts\global.ps1' -Encoding ascii -Force
 
 $OOBECMD = @'
