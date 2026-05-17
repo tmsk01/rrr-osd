@@ -105,4 +105,54 @@ try {
     Invoke-RestMethod -Method Get `
         -URI https://raw.githubusercontent.com/TheJumpCloud/support/master/scripts/windows/InstallWindowsAgent.ps1 `
         -OutFile InstallWindowsAgent.ps1
-    ./InstallWindowsAgent.ps1 -JumpCloudConnectKey "jcc_eyJwdWJsaWNLaWNrc3RhcnRVcmwiOiJodHRwczovL2tpY2tzdGFydC5qdW1wY2xvdWQuY29tIiwicHJpdmF0ZUtpY2tzdGFydFVybCI6Imh0dHBzOi8vcHJpdmF0ZS1raWNrc3RhcnQuanVtcGNsb3VkLmNvbSI
+    ./InstallWindowsAgent.ps1 -JumpCloudConnectKey "jcc_eyJwdWJsaWNLaWNrc3RhcnRVcmwiOiJodHRwczovL2tpY2tzdGFydC5qdW1wY2xvdWQuY29tIiwicHJpdmF0ZUtpY2tzdGFydFVybCI6Imh0dHBzOi8vcHJpdmF0ZS1raWNrc3RhcnQuanVtcGNsb3VkLmNvbSIsImNvbm5lY3RLZXkiOiI4ZTlmNmY1OWQ4ZjEzZDQyMDc2OTZlYTI3Njk0YWUyMGY1ODkzMDBlIn0g" 2>&1 | Out-File -FilePath $LogPath -Encoding ascii -Append
+    "$(Get-Date) - JumpCloud install finished" | Out-File -FilePath $LogPath -Encoding ascii -Append
+} catch {
+    "$(Get-Date) - JumpCloud install error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
+}
+'@
+$JumpCloudScript | Out-File -FilePath "$SetupScriptsPath\Install-JumpCloud.ps1" -Encoding ascii -Force
+
+$RunDebloatScript = @'
+#Requires -RunAsAdministrator
+$LogPath = "C:\Windows\Temp\Run-Debloat.log"
+"$(Get-Date) - Run-Debloat wrapper starting" | Out-File -FilePath $LogPath -Encoding ascii -Append
+try {
+    $debloat = "$env:TEMP\Debloat.ps1"
+    Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/tmsk01/rrr-osd/main/Debloat.ps1' `
+                      -OutFile $debloat -UseBasicParsing
+    & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $debloat 2>&1 | Out-File -FilePath $LogPath -Encoding ascii -Append
+    "$(Get-Date) - Debloat finished" | Out-File -FilePath $LogPath -Encoding ascii -Append
+} catch {
+    "$(Get-Date) - Wrapper error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
+}
+'@
+$RunDebloatScript | Out-File -FilePath "$SetupScriptsPath\Run-Debloat.ps1" -Encoding ascii -Force
+
+$SetupCompleteCmd = @'
+@echo off
+powershell.exe -ExecutionPolicy Bypass -NoProfile -File C:\Windows\Setup\Scripts\SetupComplete-Custom.ps1
+'@
+$SetupCompleteCmd | Out-File -FilePath "$SetupScriptsPath\SetupComplete.cmd" -Encoding ascii -Force
+
+Write-Host -ForegroundColor Green "SetupComplete scripts staged."
+
+#================================================
+# [PostOS] OOBE CMD Command Line (language only - debloat moved to RunOnce)
+#================================================
+Write-Host -ForegroundColor Green "Staging OOBE-phase scripts"
+Invoke-RestMethod https://raw.githubusercontent.com/tmsk01/rrr-osd/main/Set-GlobalSettings.ps1 | Out-File -FilePath 'C:\Windows\Setup\scripts\global.ps1' -Encoding ascii -Force
+
+$OOBECMD = @'
+@echo off
+start /wait powershell.exe -NoL -ExecutionPolicy Bypass -F C:\Windows\Setup\Scripts\global.ps1
+exit
+'@
+$OOBECMD | Out-File -FilePath 'C:\Windows\Setup\scripts\oobe.cmd' -Encoding ascii -Force
+
+#================================================
+# Restart-Computer
+#================================================
+Write-Host -ForegroundColor Green "Restarting in 10 seconds!"
+Start-Sleep -Seconds 10
+wpeutil reboot
