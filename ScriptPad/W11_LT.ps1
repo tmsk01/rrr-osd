@@ -52,7 +52,7 @@ If (!(Test-Path "C:\ProgramData\OSDeploy")) {
 $OOBEDeployJson | Out-File -FilePath "C:\ProgramData\OSDeploy\OSDeploy.OOBEDeploy.json" -Encoding utf8 -Force
 
 #==================================================================
-# [PostOS] Stage SetupComplete: rename + JumpCloud RunOnce
+# [PostOS] Stage SetupComplete: rename + JumpCloud RunOnce + Debloat RunOnce
 #==================================================================
 Write-Host -ForegroundColor Green "Staging SetupComplete scripts"
 
@@ -81,9 +81,13 @@ try {
 try {
     $RunOnce = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
     if (!(Test-Path $RunOnce)) { New-Item -Path $RunOnce -Force | Out-Null }
-    $InstallCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Install-JumpCloud.ps1"'
-    Set-ItemProperty -Path $RunOnce -Name '!InstallJumpCloud' -Value $InstallCmd -Type String -Force
+    $JCCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Install-JumpCloud.ps1"'
+    Set-ItemProperty -Path $RunOnce -Name '!1InstallJumpCloud' -Value $JCCmd -Type String -Force
     "$(Get-Date) - RunOnce staged for JumpCloud install" | Out-File -FilePath $LogPath -Encoding ascii -Append
+
+    $DebloatCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Run-Debloat.ps1"'
+    Set-ItemProperty -Path $RunOnce -Name '!2RunDebloat' -Value $DebloatCmd -Type String -Force
+    "$(Get-Date) - RunOnce staged for Debloat" | Out-File -FilePath $LogPath -Encoding ascii -Append
 } catch {
     "$(Get-Date) - RunOnce setup error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
 }
@@ -101,40 +105,4 @@ try {
     Invoke-RestMethod -Method Get `
         -URI https://raw.githubusercontent.com/TheJumpCloud/support/master/scripts/windows/InstallWindowsAgent.ps1 `
         -OutFile InstallWindowsAgent.ps1
-    ./InstallWindowsAgent.ps1 -JumpCloudConnectKey "jcc_eyJwdWJsaWNLaWNrc3RhcnRVcmwiOiJodHRwczovL2tpY2tzdGFydC5qdW1wY2xvdWQuY29tIiwicHJpdmF0ZUtpY2tzdGFydFVybCI6Imh0dHBzOi8vcHJpdmF0ZS1raWNrc3RhcnQuanVtcGNsb3VkLmNvbSIsImNvbm5lY3RLZXkiOiI4ZTlmNmY1OWQ4ZjEzZDQyMDc2OTZlYTI3Njk0YWUyMGY1ODkzMDBlIn0g" 2>&1 | Out-File -FilePath $LogPath -Encoding ascii -Append
-    "$(Get-Date) - JumpCloud install finished" | Out-File -FilePath $LogPath -Encoding ascii -Append
-} catch {
-    "$(Get-Date) - JumpCloud install error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
-}
-'@
-$JumpCloudScript | Out-File -FilePath "$SetupScriptsPath\Install-JumpCloud.ps1" -Encoding ascii -Force
-
-$SetupCompleteCmd = @'
-@echo off
-powershell.exe -ExecutionPolicy Bypass -NoProfile -File C:\Windows\Setup\Scripts\SetupComplete-Custom.ps1
-'@
-$SetupCompleteCmd | Out-File -FilePath "$SetupScriptsPath\SetupComplete.cmd" -Encoding ascii -Force
-
-Write-Host -ForegroundColor Green "SetupComplete scripts staged."
-
-#================================================
-# [PostOS] OOBE CMD Command Line (language + debloat)
-#================================================
-Write-Host -ForegroundColor Green "Staging OOBE-phase scripts"
-Invoke-RestMethod https://raw.githubusercontent.com/tmsk01/rrr-osd/main/Set-GlobalSettings.ps1 | Out-File -FilePath 'C:\Windows\Setup\scripts\global.ps1' -Encoding ascii -Force
-Invoke-RestMethod https://raw.githubusercontent.com/tmsk01/rrr-osd/main/Debloat.ps1 | Out-File -FilePath 'C:\Windows\Setup\scripts\debloat.ps1' -Encoding ascii -Force
-
-$OOBECMD = @'
-@echo off
-start /wait powershell.exe -NoL -ExecutionPolicy Bypass -F C:\Windows\Setup\Scripts\global.ps1
-start /wait powershell.exe -NoL -ExecutionPolicy Bypass -F C:\Windows\Setup\Scripts\debloat.ps1
-exit
-'@
-$OOBECMD | Out-File -FilePath 'C:\Windows\Setup\scripts\oobe.cmd' -Encoding ascii -Force
-
-#================================================
-# Restart-Computer
-#================================================
-Write-Host -ForegroundColor Green "Restarting in 10 seconds!"
-Start-Sleep -Seconds 10
-wpeutil reboot
+    ./InstallWindowsAgent.ps1 -JumpCloudConnectKey "jcc_eyJwdWJsaWNLaWNrc3RhcnRVcmwiOiJodHRwczovL2tpY2tzdGFydC5qdW1wY2xvdWQuY29tIiwicHJpdmF0ZUtpY2tzdGFydFVybCI6Imh0dHBzOi8vcHJpdmF0ZS1raWNrc3RhcnQuanVtcGNsb3VkLmNvbSI
