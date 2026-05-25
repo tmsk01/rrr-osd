@@ -52,7 +52,7 @@ If (!(Test-Path "C:\ProgramData\OSDeploy")) {
 $OOBEDeployJson | Out-File -FilePath "C:\ProgramData\OSDeploy\OSDeploy.OOBEDeploy.json" -Encoding utf8 -Force
 
 #==================================================================
-# [PostOS] Stage SetupComplete: rename + JumpCloud RunOnce
+# [PostOS] Stage SetupComplete: rename + JumpCloud + Debloat + Auto-login counter
 #==================================================================
 Write-Host -ForegroundColor Green "Staging SetupComplete scripts"
 
@@ -61,16 +61,13 @@ if (!(Test-Path $SetupScriptsPath)) {
     New-Item $SetupScriptsPath -ItemType Directory -Force | Out-Null
 }
 
-# ----- SetupComplete script: runs during Specialize -----
 $SetupCompleteScript = @'
 #Requires -RunAsAdministrator
 $LogPath = "C:\Windows\Temp\SetupComplete.log"
 "$(Get-Date) - SetupComplete script starting" | Out-File -FilePath $LogPath -Encoding ascii -Append
 
-# --- Rename PC (UPPERCASE, NetBIOS max 15 chars) ---
 try {
     $serial = (Get-CimInstance -ClassName Win32_BIOS).SerialNumber.Trim().ToUpper()
-    # "O-LTCS-" is 7 chars, leaving 8 for serial (caps NetBIOS at 15)
     if ($serial.Length -gt 8) { $serial = $serial.Substring(0, 8) }
     if (-not [string]::IsNullOrWhiteSpace($serial)) {
         $newHostname = "O-LTCS-$serial"
@@ -81,13 +78,27 @@ try {
     "$(Get-Date) - Rename error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
 }
 
-# --- Stage RunOnce entry to install JumpCloud on first user login ---
+try {
+    $Winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    Set-ItemProperty -Path $Winlogon -Name 'AutoAdminLogon' -Value '1' -Type String -Force
+    Set-ItemProperty -Path $Winlogon -Name 'DefaultUsername' -Value 'Ovoko Admin' -Type String -Force
+    Set-ItemProperty -Path $Winlogon -Name 'DefaultPassword' -Value '' -Type String -Force
+    Set-ItemProperty -Path $Winlogon -Name 'AutoLogonCount' -Value 3 -Type DWord -Force
+    "$(Get-Date) - Auto-login enabled for 3 logins" | Out-File -FilePath $LogPath -Encoding ascii -Append
+} catch {
+    "$(Get-Date) - Auto-login setup error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
+}
+
 try {
     $RunOnce = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
     if (!(Test-Path $RunOnce)) { New-Item -Path $RunOnce -Force | Out-Null }
-    $InstallCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Install-JumpCloud.ps1"'
-    Set-ItemProperty -Path $RunOnce -Name '!InstallJumpCloud' -Value $InstallCmd -Type String -Force
+    $JCCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Install-JumpCloud.ps1"'
+    Set-ItemProperty -Path $RunOnce -Name '!1InstallJumpCloud' -Value $JCCmd -Type String -Force
     "$(Get-Date) - RunOnce staged for JumpCloud install" | Out-File -FilePath $LogPath -Encoding ascii -Append
+
+    $DebloatCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Run-Debloat.ps1"'
+    Set-ItemProperty -Path $RunOnce -Name '!2RunDebloat' -Value $DebloatCmd -Type String -Force
+    "$(Get-Date) - RunOnce staged for Debloat" | Out-File -FilePath $LogPath -Encoding ascii -Append
 } catch {
     "$(Get-Date) - RunOnce setup error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
 }
@@ -96,7 +107,6 @@ try {
 '@
 $SetupCompleteScript | Out-File -FilePath "$SetupScriptsPath\SetupComplete-Custom.ps1" -Encoding ascii -Force
 
-# ----- JumpCloud install script (runs on first user login via RunOnce) -----
 $JumpCloudScript = @'
 #Requires -RunAsAdministrator
 $LogPath = "C:\Windows\Temp\JumpCloud-Install.log"
@@ -114,7 +124,21 @@ try {
 '@
 $JumpCloudScript | Out-File -FilePath "$SetupScriptsPath\Install-JumpCloud.ps1" -Encoding ascii -Force
 
-# ----- SetupComplete.cmd: Windows auto-runs this at end of Specialize -----
+$RunDebloatScript = @'
+#Requires -RunAsAdministrator
+$LogPath = "C:\Windows\Temp\Run-Debloat.log"
+"$(Get-Date) - Run-Debloat wrapper starting" | Out-File -FilePath $LogPath -Encoding ascii -Append
+try {
+    $debloat = "$env:TEMP\Debloat.ps1"
+    Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/tmsk01/rrr-osd/main/Debloat.ps1' -OutFile $debloat -UseBasicParsing
+    & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $debloat 2>&1 | Out-File -FilePath $LogPath -Encoding ascii -Append
+    "$(Get-Date) - Debloat finished" | Out-File -FilePath $LogPath -Encoding ascii -Append
+} catch {
+    "$(Get-Date) - Wrapper error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
+}
+'@
+$RunDebloatScript | Out-File -FilePath "$SetupScriptsPath\Run-Debloat.ps1" -Encoding ascii -Force
+
 $SetupCompleteCmd = @'
 @echo off
 powershell.exe -ExecutionPolicy Bypass -NoProfile -File C:\Windows\Setup\Scripts\SetupComplete-Custom.ps1
