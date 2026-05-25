@@ -52,7 +52,7 @@ If (!(Test-Path "C:\ProgramData\OSDeploy")) {
 $OOBEDeployJson | Out-File -FilePath "C:\ProgramData\OSDeploy\OSDeploy.OOBEDeploy.json" -Encoding utf8 -Force
 
 #==================================================================
-# [PostOS] Stage SetupComplete: rename + JumpCloud RunOnce
+# [PostOS] Stage SetupComplete: rename + JumpCloud + Debloat + Auto-login counter
 #==================================================================
 Write-Host -ForegroundColor Green "Staging SetupComplete scripts"
 
@@ -79,11 +79,26 @@ try {
 }
 
 try {
+    $Winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    Set-ItemProperty -Path $Winlogon -Name 'AutoAdminLogon' -Value '1' -Type String -Force
+    Set-ItemProperty -Path $Winlogon -Name 'DefaultUsername' -Value 'Ovoko Admin' -Type String -Force
+    Set-ItemProperty -Path $Winlogon -Name 'DefaultPassword' -Value '' -Type String -Force
+    Set-ItemProperty -Path $Winlogon -Name 'AutoLogonCount' -Value 3 -Type DWord -Force
+    "$(Get-Date) - Auto-login enabled for 3 logins" | Out-File -FilePath $LogPath -Encoding ascii -Append
+} catch {
+    "$(Get-Date) - Auto-login setup error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
+}
+
+try {
     $RunOnce = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
     if (!(Test-Path $RunOnce)) { New-Item -Path $RunOnce -Force | Out-Null }
-    $InstallCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Install-JumpCloud.ps1"'
-    Set-ItemProperty -Path $RunOnce -Name '!InstallJumpCloud' -Value $InstallCmd -Type String -Force
+    $JCCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Install-JumpCloud.ps1"'
+    Set-ItemProperty -Path $RunOnce -Name '!1InstallJumpCloud' -Value $JCCmd -Type String -Force
     "$(Get-Date) - RunOnce staged for JumpCloud install" | Out-File -FilePath $LogPath -Encoding ascii -Append
+
+    $DebloatCmd = 'powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File "C:\Windows\Setup\Scripts\Run-Debloat.ps1"'
+    Set-ItemProperty -Path $RunOnce -Name '!2RunDebloat' -Value $DebloatCmd -Type String -Force
+    "$(Get-Date) - RunOnce staged for Debloat" | Out-File -FilePath $LogPath -Encoding ascii -Append
 } catch {
     "$(Get-Date) - RunOnce setup error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
 }
@@ -108,6 +123,21 @@ try {
 }
 '@
 $JumpCloudScript | Out-File -FilePath "$SetupScriptsPath\Install-JumpCloud.ps1" -Encoding ascii -Force
+
+$RunDebloatScript = @'
+#Requires -RunAsAdministrator
+$LogPath = "C:\Windows\Temp\Run-Debloat.log"
+"$(Get-Date) - Run-Debloat wrapper starting" | Out-File -FilePath $LogPath -Encoding ascii -Append
+try {
+    $debloat = "$env:TEMP\Debloat.ps1"
+    Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/tmsk01/rrr-osd/main/Debloat.ps1' -OutFile $debloat -UseBasicParsing
+    & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $debloat 2>&1 | Out-File -FilePath $LogPath -Encoding ascii -Append
+    "$(Get-Date) - Debloat finished" | Out-File -FilePath $LogPath -Encoding ascii -Append
+} catch {
+    "$(Get-Date) - Wrapper error: $_" | Out-File -FilePath $LogPath -Encoding ascii -Append
+}
+'@
+$RunDebloatScript | Out-File -FilePath "$SetupScriptsPath\Run-Debloat.ps1" -Encoding ascii -Force
 
 $SetupCompleteCmd = @'
 @echo off
