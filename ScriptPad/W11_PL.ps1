@@ -81,8 +81,8 @@ try {
 try {
     $Winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
     Set-ItemProperty -Path $Winlogon -Name 'AutoAdminLogon' -Value '1' -Type String -Force
-    Set-ItemProperty -Path $Winlogon -Name 'DefaultUsername' -Value 'Ovoko Admin' -Type String -Force
-    Set-ItemProperty -Path $Winlogon -Name 'DefaultPassword' -Value '' -Type String -Force
+    Set-ItemProperty -Path $Winlogon -Name 'DefaultUsername' -Value 'OvokoAdmin' -Type String -Force
+    Set-ItemProperty -Path $Winlogon -Name 'DefaultPassword' -Value 'Uycju6CgLBLC4' -Type String -Force
     Set-ItemProperty -Path $Winlogon -Name 'AutoLogonCount' -Value 3 -Type DWord -Force
     "$(Get-Date) - Auto-login enabled for 3 logins" | Out-File -FilePath $LogPath -Encoding ascii -Append
 } catch {
